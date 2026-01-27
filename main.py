@@ -1,18 +1,53 @@
-# main.py
+# main.py (top section)
+
+from __future__ import annotations
+
+import os
 from datetime import datetime, timedelta, date
 from typing import Optional
-import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 import google.generativeai as genai
 
-# Load .env only if present (local dev). Render uses dashboard env vars.
+# Load .env for local dev (Render uses dashboard env vars)
 load_dotenv()
 
+# -------------------------
+# App
+# -------------------------
+ENV = os.getenv("ENV", "development").strip().lower()
+app = FastAPI(title="Nova Human Backend")
+
+# -------------------------
+# CORS
+# -------------------------
+# IMPORTANT: Do NOT add any custom middleware that returns early for OPTIONS.
+# CORSMiddleware must handle OPTIONS so it can attach CORS headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://nova-human-frontend-4.onrender.com",
+        "http://localhost:3000",
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------
+# Gemini (configure once)
+# -------------------------
+gemini_key = os.getenv("GEMINI_API_KEY") or ""
+if gemini_key.strip():
+    genai.configure(api_key=gemini_key.strip())
+
+# -------------------------
 # DB + init
+# -------------------------
 from core.db import connect
 from core.models import init_db
 
@@ -32,43 +67,6 @@ from core.chat_store_sqlite import (
     maybe_set_title_from_text,
 )
 
-ENV = os.getenv("ENV", "development")
-
-app = FastAPI(title="Nova Human Backend")
-
-# -------------------------
-# Gemini (configure once)
-# -------------------------
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-
-# -------------------------
-# CORS (DEMO SAFE + ENV CONTROLLED)
-# -------------------------
-# Use env var in Render: CORS_ORIGINS
-# Examples:
-#   CORS_ORIGINS=*                     (demo mode, no cookies)
-#   CORS_ORIGINS=https://nova-human-frontend-4.onrender.com
-
-# CORS (production)
-
-cors_raw = (os.getenv("CORS_ORIGINS") or "").strip()
-
-allowed = [o.strip() for o in cors_raw.split(",") if o.strip()]
-if not allowed:
-    allowed = ["*"]  # dev fallback
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed,
-    allow_credentials=False,  # IMPORTANT (no cookies)
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-
-
 # -------------------------
 # Helpers
 # -------------------------
@@ -86,7 +84,6 @@ def normalize_sid(raw: Optional[str]) -> str:
     s = (raw or "").strip()
     return s if s else "default"
 
-
 # -------------------------
 # SQLite tuning (stability)
 # -------------------------
@@ -102,7 +99,6 @@ def _sqlite_pragmas():
     except Exception:
         pass
 
-
 def migrate_db():
     """
     Adds missing columns safely (idempotent).
@@ -110,7 +106,6 @@ def migrate_db():
     conn = connect()
     cur = conn.cursor()
 
-    # --- direction table columns ---
     try:
         cur.execute("PRAGMA table_info(direction)")
         cols = {row["name"] for row in cur.fetchall()}
@@ -152,7 +147,6 @@ def migrate_db():
     conn.commit()
     conn.close()
 
-
 def ensure_direction_row_exists():
     """
     Ensures direction row id=1 exists.
@@ -178,7 +172,6 @@ def ensure_direction_row_exists():
 
     conn.close()
 
-
 def get_today_step():
     conn = connect()
     cur = conn.cursor()
@@ -194,7 +187,6 @@ def get_today_step():
         "estimate_min": int(r["estimate_min"] or 25),
         "done": bool(r["done"]),
     }
-
 
 def get_direction_with_step():
     ensure_direction_row_exists()
@@ -227,7 +219,6 @@ def get_direction_with_step():
         "today_step": ts,
     }
 
-
 # -------------------------
 # Startup
 # -------------------------
@@ -237,7 +228,6 @@ def _startup():
     init_db()
     migrate_db()
     ensure_direction_row_exists()
-
 
 # -------------------------
 # Health
@@ -256,7 +246,6 @@ def full_health():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-
 # -------------------------
 # Models (chat)
 # -------------------------
@@ -272,9 +261,8 @@ class ChatClear(BaseModel):
 class ChatDelete(BaseModel):
     sid: Optional[str] = None
 
-
 # -------------------------
-# ✅ Sessions list endpoints
+# Sessions list endpoints
 # -------------------------
 @app.get("/memory/chats")
 def get_chats():
@@ -286,9 +274,8 @@ def get_sessions():
     items = list_sessions()
     return {"sessions": items, "items": items}
 
-
 # -------------------------
-# ✅ READ: must NOT create/touch
+# READ: must NOT create/touch
 # -------------------------
 @app.get("/memory/chat")
 def read_chat(sid: str = Query(default="default")):
@@ -296,9 +283,8 @@ def read_chat(sid: str = Query(default="default")):
     msgs = get_messages(sid)
     return {"messages": msgs}
 
-
 # -------------------------
-# ✅ WRITE: touch/create session ONLY here
+# WRITE: touch/create session ONLY here
 # -------------------------
 @app.post("/memory/chat")
 def send_chat(payload: ChatSend):
@@ -309,7 +295,6 @@ def send_chat(payload: ChatSend):
         return {"ok": False, "error": "message required"}
 
     touch_session(sid)
-
     add_message(sid, "user", text)
 
     try:
@@ -343,9 +328,9 @@ def send_chat(payload: ChatSend):
         assistant = "I’m here. Tell me what you want to do next."
 
     add_message(sid, "assistant", assistant)
-
     touch_session(sid)
 
+    # Optional summarization
     try:
         msgs_for_summary = get_messages(sid, limit=12)
         if len(msgs_for_summary) >= 6:
@@ -369,7 +354,6 @@ def send_chat(payload: ChatSend):
         "messages": msgs,
     }
 
-
 @app.post("/memory/chat/clear")
 def clear_chat_route(payload: ChatClear):
     sid = normalize_sid(payload.sid)
@@ -383,7 +367,6 @@ def delete_chat_route(payload: ChatDelete):
         return {"ok": False, "error": "cannot delete default"}
     delete_session(sid)
     return {"ok": True, "sid": sid}
-
 
 # -------------------------
 # Direction routes (SQLite)
@@ -581,7 +564,6 @@ def done_today_step():
     conn.close()
     return {"today_step": get_today_step()}
 
-
 # -------------------------
 # Habits routes (SQLite)
 # -------------------------
@@ -763,7 +745,6 @@ Example:
 
     return {"ok": True, "cue": "After I sit down at my desk", "action": "work on my direction for 15 minutes"}
 
-
 # -------------------------
 # Check-in routes (SQLite)
 # -------------------------
@@ -825,10 +806,9 @@ def set_today_checkin(payload: TodayCheckinPayload):
             "date": day,
             "moved_forward": bool(moved),
             "today_action": action,
-            "note": note
-        }
+            "note": note,
+        },
     }
-
 
 # -------------------------
 # Compatibility: Day history (Sidebar expects these)
@@ -848,7 +828,6 @@ def read_day_history(day: str):
 def delete_day_history(payload: HistoryDeletePayload):
     return {"ok": True}
 
-
 # -------------------------
 # Misc
 # -------------------------
@@ -859,3 +838,26 @@ def favicon():
 @app.get("/")
 def root():
     return {"status": "Nova Human backend is running"}
+
+@app.get("/debug/version")
+def debug_version():
+    return {
+        "service": "backend-1",
+        "cors_origins": [
+            "https://nova-human-frontend-4.onrender.com",
+            "http://localhost:3000",
+        ],
+        "ts": datetime.utcnow().isoformat()
+    }
+@app.get("/")
+def root():
+    return {"ok": True, "service": "backend-1", "file": "main.py"}
+@app.get("/debug/ping")
+def ping():
+    return {"pong": True}
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+@app.get("/debug/ping")
+def ping():
+    return {"pong": True}
