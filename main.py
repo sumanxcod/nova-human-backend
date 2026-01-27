@@ -1,15 +1,16 @@
-# main.py 
+# main.py
 from datetime import datetime, timedelta, date
 from typing import Optional
+import os
 
-import os 
 from dotenv import load_dotenv
-load_dotenv()
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import google.generativeai as genai
 
+# Load .env only if present (local dev). Render uses dashboard env vars.
+load_dotenv()
 
 # DB + init
 from core.db import connect
@@ -35,23 +36,38 @@ ENV = os.getenv("ENV", "development")
 
 app = FastAPI(title="Nova Human Backend")
 
-import google.generativeai as genai
+# -------------------------
+# Gemini (configure once)
+# -------------------------
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-models = list(genai.list_models())
-print("count", len(models))
-for m in models[:25]:
-    print(m.name, "|", m.supported_generation_methods)
+
 # -------------------------
-# CORS
+# CORS (DEMO SAFE + ENV CONTROLLED)
 # -------------------------
+# Use env var in Render: CORS_ORIGINS
+# Examples:
+#   CORS_ORIGINS=*                     (demo mode, no cookies)
+#   CORS_ORIGINS=https://nova-human-frontend-4.onrender.com
+
+# CORS (production)
+
+cors_raw = (os.getenv("CORS_ORIGINS") or "").strip()
+
+allowed = [o.strip() for o in cors_raw.split(",") if o.strip()]
+if not allowed:
+    allowed = ["*"]  # dev fallback
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
+    allow_origins=allowed,
+    allow_credentials=False,  # IMPORTANT (no cookies)
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+
 
 # -------------------------
 # Helpers
@@ -69,6 +85,23 @@ def compute_end_date(start_day: str, duration_days: int) -> str:
 def normalize_sid(raw: Optional[str]) -> str:
     s = (raw or "").strip()
     return s if s else "default"
+
+
+# -------------------------
+# SQLite tuning (stability)
+# -------------------------
+def _sqlite_pragmas():
+    try:
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA busy_timeout=5000;")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
 
 def migrate_db():
     """
@@ -119,6 +152,7 @@ def migrate_db():
     conn.commit()
     conn.close()
 
+
 def ensure_direction_row_exists():
     """
     Ensures direction row id=1 exists.
@@ -144,6 +178,7 @@ def ensure_direction_row_exists():
 
     conn.close()
 
+
 def get_today_step():
     conn = connect()
     cur = conn.cursor()
@@ -159,6 +194,7 @@ def get_today_step():
         "estimate_min": int(r["estimate_min"] or 25),
         "done": bool(r["done"]),
     }
+
 
 def get_direction_with_step():
     ensure_direction_row_exists()
@@ -191,14 +227,17 @@ def get_direction_with_step():
         "today_step": ts,
     }
 
+
 # -------------------------
 # Startup
 # -------------------------
 @app.on_event("startup")
 def _startup():
+    _sqlite_pragmas()
     init_db()
     migrate_db()
     ensure_direction_row_exists()
+
 
 # -------------------------
 # Health
@@ -217,6 +256,7 @@ def full_health():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 # -------------------------
 # Models (chat)
 # -------------------------
@@ -232,6 +272,7 @@ class ChatClear(BaseModel):
 class ChatDelete(BaseModel):
     sid: Optional[str] = None
 
+
 # -------------------------
 # ✅ Sessions list endpoints
 # -------------------------
@@ -245,6 +286,7 @@ def get_sessions():
     items = list_sessions()
     return {"sessions": items, "items": items}
 
+
 # -------------------------
 # ✅ READ: must NOT create/touch
 # -------------------------
@@ -253,6 +295,7 @@ def read_chat(sid: str = Query(default="default")):
     sid = normalize_sid(sid)
     msgs = get_messages(sid)
     return {"messages": msgs}
+
 
 # -------------------------
 # ✅ WRITE: touch/create session ONLY here
@@ -265,22 +308,17 @@ def send_chat(payload: ChatSend):
     if not text:
         return {"ok": False, "error": "message required"}
 
-    # Create/touch session only on real user message
     touch_session(sid)
 
-    # 1) Save user message
     add_message(sid, "user", text)
 
-    # Optional: set title from first message
     try:
         maybe_set_title_from_text(sid, text)
     except Exception:
         pass
 
-    # 2) Build context
     ctx = build_chat_context(sid)
 
-    # 3) Generate assistant reply
     try:
         assistant = mentor_reply(
             {
@@ -304,13 +342,10 @@ def send_chat(payload: ChatSend):
     if not isinstance(assistant, str) or not assistant.strip():
         assistant = "I’m here. Tell me what you want to do next."
 
-    # 4) Save assistant message
     add_message(sid, "assistant", assistant)
 
-    # 5) Touch session
     touch_session(sid)
 
-    # 6) Update summary sometimes
     try:
         msgs_for_summary = get_messages(sid, limit=12)
         if len(msgs_for_summary) >= 6:
@@ -334,6 +369,7 @@ def send_chat(payload: ChatSend):
         "messages": msgs,
     }
 
+
 @app.post("/memory/chat/clear")
 def clear_chat_route(payload: ChatClear):
     sid = normalize_sid(payload.sid)
@@ -347,6 +383,7 @@ def delete_chat_route(payload: ChatDelete):
         return {"ok": False, "error": "cannot delete default"}
     delete_session(sid)
     return {"ok": True, "sid": sid}
+
 
 # -------------------------
 # Direction routes (SQLite)
@@ -544,6 +581,7 @@ def done_today_step():
     conn.close()
     return {"today_step": get_today_step()}
 
+
 # -------------------------
 # Habits routes (SQLite)
 # -------------------------
@@ -561,7 +599,6 @@ def get_habits():
         rows = cur.fetchall()
         days = {r["day"]: int(r["done"]) for r in rows}
 
-        # effort (if table exists)
         effort = {}
         try:
             cur.execute("SELECT day, effort FROM habit_effort WHERE habit_id = ?", (h["id"],))
@@ -726,6 +763,7 @@ Example:
 
     return {"ok": True, "cue": "After I sit down at my desk", "action": "work on my direction for 15 minutes"}
 
+
 # -------------------------
 # Check-in routes (SQLite)
 # -------------------------
@@ -780,7 +818,17 @@ def set_today_checkin(payload: TodayCheckinPayload):
     conn.commit()
     conn.close()
 
-    return {"ok": True, "date": day, "checkin": {"date": day, "moved_forward": bool(moved), "today_action": action, "note": note}}
+    return {
+        "ok": True,
+        "date": day,
+        "checkin": {
+            "date": day,
+            "moved_forward": bool(moved),
+            "today_action": action,
+            "note": note
+        }
+    }
+
 
 # -------------------------
 # Compatibility: Day history (Sidebar expects these)
@@ -800,6 +848,7 @@ def read_day_history(day: str):
 def delete_day_history(payload: HistoryDeletePayload):
     return {"ok": True}
 
+
 # -------------------------
 # Misc
 # -------------------------
@@ -807,4 +856,6 @@ def delete_day_history(payload: HistoryDeletePayload):
 def favicon():
     return {}
 
-allow_origins=["*"]
+@app.get("/")
+def root():
+    return {"status": "Nova Human backend is running"}

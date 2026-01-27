@@ -15,12 +15,6 @@ def build_chat_context(sid: str = "default") -> Dict[str, Any]:
     summary = get_summary(sid)
     recent = get_messages(sid, limit=12)
 
-    return {
-    "summary": summary,
-    "recent_messages": recent,
-}
-
-
     # ---- chat (SQLite) ----
     chat = get_messages(sid)
     recent_user_messages = [m["content"] for m in chat if m.get("role") == "user"][-5:]
@@ -109,4 +103,9 @@ def build_chat_context(sid: str = "default") -> Dict[str, Any]:
         "habits_total": total_habits,
 
         "today_checkin": today_checkin,
+    }
+    return {
+        "summary": summary,
+        "recent_messages": recent,
+        "today": today,
     }
