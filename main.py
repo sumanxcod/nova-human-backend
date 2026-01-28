@@ -998,3 +998,14 @@ def debug_version():
         "cors_origins": allow_origins,
         "ts": datetime.utcnow().isoformat(),
     }
+@app.get("/debug/config")
+def debug_config():
+    return {
+        "service": "backend-1",
+        "provider": (os.getenv("MODEL_PROVIDER") or "").strip(),
+        "openai_model": (os.getenv("OPENAI_MODEL") or "").strip(),
+        "has_openai_key": bool((os.getenv("OPENAI_API_KEY") or "").strip()),
+        "has_gemini_key": bool((os.getenv("GEMINI_API_KEY") or "").strip()),
+    }
+
+
