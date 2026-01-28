@@ -60,7 +60,7 @@ def simple_answer(text: str) -> str:
         # Demo-safe: never crash if key missing
         return "Gemini key is missing on server. Add GEMINI_API_KEY in env vars."
 
-    model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-flash-lite-latest").strip()
+    model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-2.5-flash-lite").strip()
     m = genai.GenerativeModel(model_name)
 
     # Give Gemini a tiny system steer (keeps answers clean in demos)
@@ -935,7 +935,3 @@ def debug_version():
         "cors_origins": allow_origins,
         "ts": datetime.utcnow().isoformat(),
     }
-
-@app.get("/debug/ping")
-def ping():
-    return {"pong": True}
