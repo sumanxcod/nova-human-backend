@@ -51,27 +51,38 @@ gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
 if gemini_key:
     genai.configure(api_key=gemini_key)
 
-def simple_answer(text: str) -> str:
-    """
-    Direct Gemini answer (general assistant mode).
-    Used for non-coaching queries AND as fallback if mentor crashes.
-    """
-    if not gemini_key:
-        # Demo-safe: never crash if key missing
-        return "Gemini key is missing on server. Add GEMINI_API_KEY in env vars."
+import time
 
-    model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-2.5-flash-lite").strip()
+def simple_answer(text: str) -> str:
+    gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not gemini_key:
+        return "I’m here, but I’m temporarily unavailable. Please try again in a moment."
+
+    model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-flash-lite-latest").strip()
     m = genai.GenerativeModel(model_name)
 
-    # Give Gemini a tiny system steer (keeps answers clean in demos)
     prompt = (
-        "You are a helpful, concise assistant.\n"
-        "Answer the user directly.\n\n"
+        "You are Nova Human. Calm, direct, helpful.\n"
+        "Answer the user normally (not coaching) unless they ask for coaching.\n\n"
         f"User: {text}"
     )
 
-    r = m.generate_content(prompt)
-    return (getattr(r, "text", "") or "").strip()
+    last_err = None
+    for delay in (0, 1.0, 2.0):
+        try:
+            if delay:
+                time.sleep(delay)
+            r = m.generate_content(prompt)
+            out = (getattr(r, "text", "") or "").strip()
+            if out:
+                return out
+            last_err = RuntimeError("Empty response from model")
+        except Exception as e:
+            last_err = e
+
+    print("🔥 simple_answer failed:", last_err)
+    return "I’m here. Tell me what you want to talk about in one sentence."
+
 
 # -------------------------
 # DB + init
