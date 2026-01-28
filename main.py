@@ -17,14 +17,13 @@ from openai import OpenAI
 # ✅ (Optional) Gemini fallback
 import google.generativeai as genai
 
-
 # Load .env for local dev (Render uses dashboard env vars)
 load_dotenv()
 
 # -------------------------
 # App
 # -------------------------
-ENV = os.getenv("ENV", "development").strip().lower()
+ENV = (os.getenv("ENV") or "development").strip().lower()
 app = FastAPI(title="Nova Human Backend")
 
 # -------------------------
@@ -62,6 +61,7 @@ if gemini_key:
 # -------------------------
 _openai_client: Optional[OpenAI] = None
 
+
 def _get_openai_client() -> OpenAI:
     global _openai_client
     if _openai_client is None:
@@ -69,25 +69,32 @@ def _get_openai_client() -> OpenAI:
     return _openai_client
 
 
+# ✅ Hard-lock identity at system level (EXACT requested version)
 def openai_answer(text: str) -> str:
     key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not key:
-        return "I’m temporarily unavailable. Please try again in a moment."
+        return "AI is not configured on the server yet."
 
-    # Pick a sane default; you can override via Render env var OPENAI_MODEL
     model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
     client = _get_openai_client()
 
     resp = client.responses.create(
         model=model,
         instructions=(
-            "You are Nova Human. Calm, direct, helpful. "
-            "Answer the user normally (not coaching) unless they ask for coaching."
+            "You are Nova Human.\n"
+            "You are NOT ChatGPT.\n"
+            "You are NOT GPT-4.\n"
+            "You NEVER mention OpenAI or models.\n"
+            "You speak as a calm, grounded, human-centered guide.\n"
+            "If asked who you are, you say:\n"
+            "'I’m Nova Human. I help people slow down, clarify direction, and move forward one honest step at a time.'\n"
+            "Keep answers natural, short, and human."
         ),
         input=text,
     )
+
     out = (getattr(resp, "output_text", "") or "").strip()
-    return out or "I’m here. Tell me what you want to talk about in one sentence."
+    return out or "I’m here. What do you want to work on?"
 
 
 def simple_answer(text: str) -> str:
@@ -107,8 +114,8 @@ def simple_answer(text: str) -> str:
             return "I’m here. Tell me what you want to talk about in one sentence."
 
     # optional: gemini fallback
-    gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
-    if not gemini_key:
+    gemini_key2 = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not gemini_key2:
         return "I’m temporarily unavailable. Please try again in a moment."
 
     model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-flash-lite-latest").strip()
@@ -165,16 +172,20 @@ from core.chat_store_sqlite import (
 def now_iso() -> str:
     return datetime.utcnow().isoformat()
 
+
 def today_iso() -> str:
     return date.today().isoformat()
+
 
 def compute_end_date(start_day: str, duration_days: int) -> str:
     d0 = date.fromisoformat(start_day)
     return (d0 + timedelta(days=max(1, int(duration_days)) - 1)).isoformat()
 
+
 def normalize_sid(raw: Optional[str]) -> str:
     s = (raw or "").strip()
     return s if s else "default"
+
 
 # -------------------------
 # Demo-friendly intent routing
@@ -182,6 +193,7 @@ def normalize_sid(raw: Optional[str]) -> str:
 def is_greeting(text: str) -> bool:
     t = text.strip().lower()
     return t in {"hi", "hello", "hey", "hi nova", "hello nova", "hey nova"}
+
 
 def is_about(text: str) -> bool:
     t = text.strip().lower()
@@ -194,14 +206,31 @@ def is_about(text: str) -> bool:
         "who is nova",
     }
 
+
 def looks_like_coaching(text: str) -> bool:
     t = text.lower()
     coaching_words = [
-        "stuck", "discipline", "focus", "direction", "habit", "habits",
-        "procrast", "goal", "goals", "plan", "planning", "motivation",
-        "routine", "consistency", "addiction", "dopamine", "lazy", "burnout"
+        "stuck",
+        "discipline",
+        "focus",
+        "direction",
+        "habit",
+        "habits",
+        "procrast",
+        "goal",
+        "goals",
+        "plan",
+        "planning",
+        "motivation",
+        "routine",
+        "consistency",
+        "addiction",
+        "dopamine",
+        "lazy",
+        "burnout",
     ]
     return any(w in t for w in coaching_words)
+
 
 # -------------------------
 # SQLite tuning (stability)
@@ -217,6 +246,7 @@ def _sqlite_pragmas():
         conn.close()
     except Exception:
         pass
+
 
 def migrate_db():
     """
@@ -266,6 +296,7 @@ def migrate_db():
     conn.commit()
     conn.close()
 
+
 def ensure_direction_row_exists():
     """
     Ensures direction row id=1 exists.
@@ -291,6 +322,7 @@ def ensure_direction_row_exists():
 
     conn.close()
 
+
 def get_today_step():
     conn = connect()
     cur = conn.cursor()
@@ -307,6 +339,7 @@ def get_today_step():
         "done": bool(r["done"]),
     }
 
+
 def get_direction_with_step():
     ensure_direction_row_exists()
     conn = connect()
@@ -322,21 +355,18 @@ def get_direction_with_step():
         "emotion_30": r["emotion_30"],
         "consequence": r["consequence"],
         "duration_days": int(r["duration_days"] or 30),
-
         "status": r["status"] or "draft",
         "created_at": r["created_at"],
         "calibration_ends_at": r["calibration_ends_at"],
         "locked_at": r["locked_at"],
-
         "start_date": r["start_date"],
         "end_date": r["end_date"],
-
         "metric_name": r["metric_name"] or "Days completed",
         "metric_target": int(r["metric_target"] or 30),
         "metric_progress": int(r["metric_progress"] or 0),
-
         "today_step": ts,
     }
+
 
 # -------------------------
 # Startup
@@ -348,12 +378,14 @@ def _startup():
     migrate_db()
     ensure_direction_row_exists()
 
+
 # -------------------------
 # Health
 # -------------------------
 @app.get("/health")
 def health():
     return {"ok": True}
+
 
 @app.get("/health/full")
 def full_health():
@@ -365,9 +397,11 @@ def full_health():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
 
 # -------------------------
 # Models (chat)
@@ -378,11 +412,14 @@ class ChatSend(BaseModel):
     system: Optional[str] = None
     context: Optional[dict] = None
 
+
 class ChatClear(BaseModel):
     sid: Optional[str] = None
 
+
 class ChatDelete(BaseModel):
     sid: Optional[str] = None
+
 
 # -------------------------
 # Sessions list endpoints
@@ -392,10 +429,12 @@ def get_chats():
     items = list_sessions()
     return {"items": items}
 
+
 @app.get("/memory/sessions")
 def get_sessions():
     items = list_sessions()
     return {"sessions": items, "items": items}
+
 
 # -------------------------
 # READ: must NOT create/touch
@@ -405,6 +444,7 @@ def read_chat(sid: str = Query(default="default")):
     sid = normalize_sid(sid)
     msgs = get_messages(sid)
     return {"messages": msgs}
+
 
 # -------------------------
 # WRITE: touch/create session ONLY here
@@ -434,11 +474,23 @@ def send_chat(payload: ChatSend):
         touch_session(sid)
         return {"ok": True, "sid": sid, "assistant_message": assistant, "messages": get_messages(sid)}
 
+    # ✅ Hard “about” override (NO AI call)
     if is_about(text):
-        assistant = "I’m Nova Human — calm, direct, and practical. What do you want to work on right now?"
+        assistant = (
+            "I’m Nova Human.\n\n"
+            "I exist to help you slow down your thinking, "
+            "clarify what actually matters, and take one real step forward at a time.\n\n"
+            "I don’t motivate or overwhelm. "
+            "I focus on direction, consistency, and execution."
+        )
         add_message(sid, "assistant", assistant)
         touch_session(sid)
-        return {"ok": True, "sid": sid, "assistant_message": assistant, "messages": get_messages(sid)}
+        return {
+            "ok": True,
+            "sid": sid,
+            "assistant_message": assistant,
+            "messages": get_messages(sid),
+        }
 
     # Build context (safe)
     try:
@@ -455,11 +507,9 @@ def send_chat(payload: ChatSend):
                     "sid": sid,
                     "summary": ctx.get("summary", ""),
                     "recent_messages": ctx.get("recent_messages", []),
-
                     "direction": ctx.get("direction"),
                     "todayAction": ctx.get("todayAction") or ctx.get("today_action"),
                     "tone": ctx.get("tone"),
-
                     "system": payload.system,
                     "context": payload.context,
                 }
@@ -496,21 +546,21 @@ def send_chat(payload: ChatSend):
     return {
         "ok": True,
         "sid": sid,
-
         "assistant_message": assistant,
         "assistant_text": assistant,
         "message": assistant,
         "content": assistant,
         "assistant": {"role": "assistant", "content": assistant},
-
         "messages": msgs,
     }
+
 
 @app.post("/memory/chat/clear")
 def clear_chat_route(payload: ChatClear):
     sid = normalize_sid(payload.sid)
     clear_session(sid)
     return {"ok": True, "sid": sid, "messages": []}
+
 
 @app.post("/memory/chat/delete")
 def delete_chat_route(payload: ChatDelete):
@@ -519,6 +569,7 @@ def delete_chat_route(payload: ChatDelete):
         return {"ok": False, "error": "cannot delete default"}
     delete_session(sid)
     return {"ok": True, "sid": sid}
+
 
 # -------------------------
 # Direction routes (SQLite)
@@ -531,9 +582,11 @@ class DirectionDraftPayload(BaseModel):
     metric_name: Optional[str] = "Days completed"
     metric_target: Optional[int] = 30
 
+
 @app.get("/memory/direction")
 def get_direction():
     return {"direction": get_direction_with_step()}
+
 
 @app.post("/memory/direction/draft")
 def draft_direction(payload: DirectionDraftPayload):
@@ -569,6 +622,7 @@ def draft_direction(payload: DirectionDraftPayload):
     conn.commit()
     conn.close()
     return {"direction": get_direction_with_step()}
+
 
 @app.post("/memory/direction/lock")
 def lock_direction(payload: DirectionDraftPayload):
@@ -607,6 +661,7 @@ def lock_direction(payload: DirectionDraftPayload):
     conn.close()
     return {"direction": get_direction_with_step()}
 
+
 @app.post("/memory/direction/finalize")
 def finalize_direction():
     ensure_direction_row_exists()
@@ -636,8 +691,10 @@ def finalize_direction():
     conn.close()
     return {"direction": get_direction_with_step()}
 
+
 class ProgressAddPayload(BaseModel):
     delta: int = 1
+
 
 @app.post("/memory/direction/progress/add")
 def add_progress(payload: ProgressAddPayload):
@@ -655,9 +712,11 @@ def add_progress(payload: ProgressAddPayload):
     conn.close()
     return {"metric_progress": new_progress}
 
+
 class TodayStepPayload(BaseModel):
     text: str
     estimate_min: int = 25
+
 
 @app.post("/memory/direction/today_step")
 def set_today_step(payload: TodayStepPayload):
@@ -685,6 +744,7 @@ def set_today_step(payload: TodayStepPayload):
     conn.commit()
     conn.close()
     return {"today_step": get_today_step()}
+
 
 @app.post("/memory/direction/today_step/done")
 def done_today_step():
@@ -716,6 +776,7 @@ def done_today_step():
     conn.close()
     return {"today_step": get_today_step()}
 
+
 # -------------------------
 # Habits routes (SQLite)
 # -------------------------
@@ -746,10 +807,12 @@ def get_habits():
     conn.close()
     return {"habits": out}
 
+
 class HabitTogglePayload(BaseModel):
     habit_id: str
     habit_name: str
     value: int  # 0|1
+
 
 @app.post("/memory/habits/toggle")
 def toggle_habit(payload: HabitTogglePayload):
@@ -788,10 +851,12 @@ def toggle_habit(payload: HabitTogglePayload):
     conn.close()
     return {"ok": True}
 
+
 class HabitEffortPayload(BaseModel):
     habit_id: str
     day: str
     effort: int  # 1..5
+
 
 @app.post("/memory/habits/effort")
 def set_habit_effort(payload: HabitEffortPayload):
@@ -820,10 +885,12 @@ def set_habit_effort(payload: HabitEffortPayload):
     conn.close()
     return {"ok": True}
 
+
 class HabitCreatePayload(BaseModel):
     cue: str
     action: str
     note: str = ""
+
 
 @app.post("/memory/habits/create")
 def create_habit(payload: HabitCreatePayload):
@@ -843,8 +910,10 @@ def create_habit(payload: HabitCreatePayload):
     conn.close()
     return {"ok": True, "id": str(hid), "name": name}
 
+
 class HabitSuggestPayload(BaseModel):
     sid: str = "default"
+
 
 @app.post("/memory/habits/suggest_from_direction")
 def suggest_habit_from_direction(payload: HabitSuggestPayload):
@@ -886,6 +955,7 @@ Example:
         return {"ok": True, "cue": "After I sit down at my desk", "action": "work on my direction for 15 minutes"}
 
     import json
+
     try:
         data = json.loads(out)
         cue = (data.get("cue") or "").strip()
@@ -896,6 +966,7 @@ Example:
         pass
 
     return {"ok": True, "cue": "After I sit down at my desk", "action": "work on my direction for 15 minutes"}
+
 
 # -------------------------
 # Check-in routes (SQLite)
@@ -920,10 +991,12 @@ def get_today_checkin():
 
     return {"date": day, "checkin": checkin, "escalation_level": 0, "tone": "neutral"}
 
+
 class TodayCheckinPayload(BaseModel):
     moved_forward: int  # 0|1
     today_action: str = ""
     note: str = ""
+
 
 @app.post("/memory/checkin/today")
 def set_today_checkin(payload: TodayCheckinPayload):
@@ -962,23 +1035,28 @@ def set_today_checkin(payload: TodayCheckinPayload):
         },
     }
 
+
 # -------------------------
 # Compatibility: Day history (Sidebar expects these)
 # -------------------------
 class HistoryDeletePayload(BaseModel):
     day: str
 
+
 @app.get("/memory/history")
 def list_day_history():
     return []
+
 
 @app.get("/memory/history/{day}")
 def read_day_history(day: str):
     return {"messages": []}
 
+
 @app.post("/memory/history/delete")
 def delete_day_history(payload: HistoryDeletePayload):
     return {"ok": True}
+
 
 # -------------------------
 # Misc / debug
@@ -987,9 +1065,11 @@ def delete_day_history(payload: HistoryDeletePayload):
 def favicon():
     return {}
 
+
 @app.get("/")
 def root():
     return {"ok": True, "status": "Nova Human backend is running"}
+
 
 @app.get("/debug/version")
 def debug_version():
@@ -998,6 +1078,8 @@ def debug_version():
         "cors_origins": allow_origins,
         "ts": datetime.utcnow().isoformat(),
     }
+
+
 @app.get("/debug/config")
 def debug_config():
     return {
@@ -1007,5 +1089,3 @@ def debug_config():
         "has_openai_key": bool((os.getenv("OPENAI_API_KEY") or "").strip()),
         "has_gemini_key": bool((os.getenv("GEMINI_API_KEY") or "").strip()),
     }
-
-
