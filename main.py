@@ -1,4 +1,4 @@
-# main.py (top section)
+# main.py
 
 from __future__ import annotations
 
@@ -44,6 +44,15 @@ app.add_middleware(
 gemini_key = os.getenv("GEMINI_API_KEY") or ""
 if gemini_key.strip():
     genai.configure(api_key=gemini_key.strip())
+
+def simple_answer(text: str) -> str:
+    """
+    Fallback: direct Gemini answer if mentor system crashes.
+    """
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+    m = genai.GenerativeModel(model_name)
+    r = m.generate_content(text)
+    return (getattr(r, "text", "") or "").strip()
 
 # -------------------------
 # DB + init
@@ -246,6 +255,10 @@ def full_health():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
 # -------------------------
 # Models (chat)
 # -------------------------
@@ -294,6 +307,17 @@ def send_chat(payload: ChatSend):
     if not text:
         return {"ok": False, "error": "message required"}
 
+    # ✅ Change 1: Greeting short-circuit for demo
+    msg = text.lower().strip()
+    greetings = {"hi", "hello", "hey", "hi nova", "hello nova", "hey nova"}
+    if msg in greetings:
+        touch_session(sid)
+        add_message(sid, "user", text)
+        assistant = "Hey. I’m here. What do you want to work on?"
+        add_message(sid, "assistant", assistant)
+        touch_session(sid)
+        return {"ok": True, "sid": sid, "assistant_message": assistant, "messages": get_messages(sid)}
+
     touch_session(sid)
     add_message(sid, "user", text)
 
@@ -321,8 +345,13 @@ def send_chat(payload: ChatSend):
             }
         )
     except Exception as e:
+        # ✅ Change 2: if mentor crashes, answer normally
         print("🔥 mentor_reply ERROR:", e)
-        assistant = "I paused for a moment. Ask again."
+        try:
+            assistant = simple_answer(text)
+        except Exception as e2:
+            print("🔥 simple_answer ERROR:", e2)
+            assistant = "I paused for a moment. Ask again."
 
     if not isinstance(assistant, str) or not assistant.strip():
         assistant = "I’m here. Tell me what you want to do next."
@@ -829,7 +858,7 @@ def delete_day_history(payload: HistoryDeletePayload):
     return {"ok": True}
 
 # -------------------------
-# Misc
+# Misc / debug
 # -------------------------
 @app.get("/favicon.ico")
 def favicon():
@@ -837,7 +866,7 @@ def favicon():
 
 @app.get("/")
 def root():
-    return {"status": "Nova Human backend is running"}
+    return {"ok": True, "status": "Nova Human backend is running"}
 
 @app.get("/debug/version")
 def debug_version():
@@ -847,17 +876,9 @@ def debug_version():
             "https://nova-human-frontend-4.onrender.com",
             "http://localhost:3000",
         ],
-        "ts": datetime.utcnow().isoformat()
+        "ts": datetime.utcnow().isoformat(),
     }
-@app.get("/")
-def root():
-    return {"ok": True, "service": "backend-1", "file": "main.py"}
-@app.get("/debug/ping")
-def ping():
-    return {"pong": True}
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
+
 @app.get("/debug/ping")
 def ping():
     return {"pong": True}
