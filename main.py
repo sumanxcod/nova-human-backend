@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, date
 from typing import Optional
 
@@ -10,7 +11,12 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# ✅ OpenAI
+from openai import OpenAI
+
+# ✅ (Optional) Gemini fallback
 import google.generativeai as genai
+
 
 # Load .env for local dev (Render uses dashboard env vars)
 load_dotenv()
@@ -39,31 +45,78 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=False,
+    allow_credentials=False,  # demo-safe
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------
-# Gemini (configure once)
+# Gemini (optional configure once)
 # -------------------------
 gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
 if gemini_key:
     genai.configure(api_key=gemini_key)
 
-import time
+# -------------------------
+# OpenAI lazy client
+# -------------------------
+_openai_client: Optional[OpenAI] = None
+
+def _get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=(os.getenv("OPENAI_API_KEY") or "").strip())
+    return _openai_client
+
+
+def openai_answer(text: str) -> str:
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not key:
+        return "I’m temporarily unavailable. Please try again in a moment."
+
+    # Pick a sane default; you can override via Render env var OPENAI_MODEL
+    model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    client = _get_openai_client()
+
+    resp = client.responses.create(
+        model=model,
+        instructions=(
+            "You are Nova Human. Calm, direct, helpful. "
+            "Answer the user normally (not coaching) unless they ask for coaching."
+        ),
+        input=text,
+    )
+    out = (getattr(resp, "output_text", "") or "").strip()
+    return out or "I’m here. Tell me what you want to talk about in one sentence."
+
 
 def simple_answer(text: str) -> str:
+    """
+    General Q&A (non-coaching) answer.
+    Default provider: OpenAI
+    Optional fallback: Gemini
+    """
+    provider = (os.getenv("MODEL_PROVIDER") or "openai").strip().lower()
+
+    # ✅ default: openai
+    if provider == "openai":
+        try:
+            return openai_answer(text)
+        except Exception as e:
+            print("🔥 openai simple_answer failed:", e)
+            return "I’m here. Tell me what you want to talk about in one sentence."
+
+    # optional: gemini fallback
     gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not gemini_key:
-        return "I’m here, but I’m temporarily unavailable. Please try again in a moment."
+        return "I’m temporarily unavailable. Please try again in a moment."
 
     model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-flash-lite-latest").strip()
     m = genai.GenerativeModel(model_name)
 
     prompt = (
         "You are Nova Human. Calm, direct, helpful.\n"
-        "Answer the user normally (not coaching) unless they ask for coaching.\n\n"
+        "Answer the user directly.\n\n"
         f"User: {text}"
     )
 
@@ -80,7 +133,7 @@ def simple_answer(text: str) -> str:
         except Exception as e:
             last_err = e
 
-    print("🔥 simple_answer failed:", last_err)
+    print("🔥 gemini simple_answer failed:", last_err)
     return "I’m here. Tell me what you want to talk about in one sentence."
 
 
@@ -416,7 +469,7 @@ def send_chat(payload: ChatSend):
 
     except Exception as e:
         print("🔥 mentor/general ERROR:", e)
-        # Absolute fallback: try Gemini direct
+        # Absolute fallback: try general again
         try:
             assistant = simple_answer(text)
         except Exception as e2:
@@ -433,7 +486,6 @@ def send_chat(payload: ChatSend):
     try:
         msgs_for_summary = get_messages(sid, limit=12)
         if len(msgs_for_summary) >= 6:
-            # If mentor summarizer fails, just skip (do NOT break chat)
             summary = mentor_reply({"task": "summarize", "messages": msgs_for_summary})
             if isinstance(summary, str) and summary.strip():
                 save_summary(sid, summary)
