@@ -1,5 +1,4 @@
 # main.py
-
 from __future__ import annotations
 
 import os
@@ -25,14 +24,21 @@ app = FastAPI(title="Nova Human Backend")
 # -------------------------
 # CORS
 # -------------------------
-# IMPORTANT: Do NOT add any custom middleware that returns early for OPTIONS.
+# IMPORTANT:
+# Do NOT add any custom middleware that returns early for OPTIONS.
 # CORSMiddleware must handle OPTIONS so it can attach CORS headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+cors_raw = (os.getenv("CORS_ORIGINS") or "").strip()
+if cors_raw:
+    allow_origins = [o.strip().rstrip("/") for o in cors_raw.split(",") if o.strip()]
+else:
+    allow_origins = [
         "https://nova-human-frontend-4.onrender.com",
         "http://localhost:3000",
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,17 +47,30 @@ app.add_middleware(
 # -------------------------
 # Gemini (configure once)
 # -------------------------
-gemini_key = os.getenv("GEMINI_API_KEY") or ""
-if gemini_key.strip():
-    genai.configure(api_key=gemini_key.strip())
+gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+if gemini_key:
+    genai.configure(api_key=gemini_key)
 
 def simple_answer(text: str) -> str:
     """
-    Fallback: direct Gemini answer if mentor system crashes.
+    Direct Gemini answer (general assistant mode).
+    Used for non-coaching queries AND as fallback if mentor crashes.
     """
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+    if not gemini_key:
+        # Demo-safe: never crash if key missing
+        return "Gemini key is missing on server. Add GEMINI_API_KEY in env vars."
+
+    model_name = (os.getenv("GEMINI_MODEL") or "models/gemini-flash-lite-latest").strip()
     m = genai.GenerativeModel(model_name)
-    r = m.generate_content(text)
+
+    # Give Gemini a tiny system steer (keeps answers clean in demos)
+    prompt = (
+        "You are a helpful, concise assistant.\n"
+        "Answer the user directly.\n\n"
+        f"User: {text}"
+    )
+
+    r = m.generate_content(prompt)
     return (getattr(r, "text", "") or "").strip()
 
 # -------------------------
@@ -92,6 +111,33 @@ def compute_end_date(start_day: str, duration_days: int) -> str:
 def normalize_sid(raw: Optional[str]) -> str:
     s = (raw or "").strip()
     return s if s else "default"
+
+# -------------------------
+# Demo-friendly intent routing
+# -------------------------
+def is_greeting(text: str) -> bool:
+    t = text.strip().lower()
+    return t in {"hi", "hello", "hey", "hi nova", "hello nova", "hey nova"}
+
+def is_about(text: str) -> bool:
+    t = text.strip().lower()
+    return t in {
+        "who are you",
+        "what are you",
+        "tell me about yourself",
+        "can you tell me about you",
+        "what is nova",
+        "who is nova",
+    }
+
+def looks_like_coaching(text: str) -> bool:
+    t = text.lower()
+    coaching_words = [
+        "stuck", "discipline", "focus", "direction", "habit", "habits",
+        "procrast", "goal", "goals", "plan", "planning", "motivation",
+        "routine", "consistency", "addiction", "dopamine", "lazy", "burnout"
+    ]
+    return any(w in t for w in coaching_words)
 
 # -------------------------
 # SQLite tuning (stability)
@@ -307,51 +353,64 @@ def send_chat(payload: ChatSend):
     if not text:
         return {"ok": False, "error": "message required"}
 
-    # ✅ Change 1: Greeting short-circuit for demo
-    msg = text.lower().strip()
-    greetings = {"hi", "hello", "hey", "hi nova", "hello nova", "hey nova"}
-    if msg in greetings:
-        touch_session(sid)
-        add_message(sid, "user", text)
-        assistant = "Hey. I’m here. What do you want to work on?"
-        add_message(sid, "assistant", assistant)
-        touch_session(sid)
-        return {"ok": True, "sid": sid, "assistant_message": assistant, "messages": get_messages(sid)}
-
+    # Always record user message
     touch_session(sid)
     add_message(sid, "user", text)
 
+    # Title best-effort
     try:
         maybe_set_title_from_text(sid, text)
     except Exception:
         pass
 
-    ctx = build_chat_context(sid)
+    # Demo-friendly short-circuits
+    if is_greeting(text):
+        assistant = "Hey — I’m here. What do you want to work on?"
+        add_message(sid, "assistant", assistant)
+        touch_session(sid)
+        return {"ok": True, "sid": sid, "assistant_message": assistant, "messages": get_messages(sid)}
 
+    if is_about(text):
+        assistant = "I’m Nova Human — calm, direct, and practical. What do you want to work on right now?"
+        add_message(sid, "assistant", assistant)
+        touch_session(sid)
+        return {"ok": True, "sid": sid, "assistant_message": assistant, "messages": get_messages(sid)}
+
+    # Build context (safe)
     try:
-        assistant = mentor_reply(
-            {
-                "message": text,
-                "sid": sid,
-                "summary": ctx.get("summary", ""),
-                "recent_messages": ctx.get("recent_messages", []),
+        ctx = build_chat_context(sid)
+    except Exception:
+        ctx = {}
 
-                "direction": ctx.get("direction"),
-                "todayAction": ctx.get("todayAction") or ctx.get("today_action"),
-                "tone": ctx.get("tone"),
+    # Route: coaching vs general
+    try:
+        if looks_like_coaching(text):
+            assistant = mentor_reply(
+                {
+                    "message": text,
+                    "sid": sid,
+                    "summary": ctx.get("summary", ""),
+                    "recent_messages": ctx.get("recent_messages", []),
 
-                "system": payload.system,
-                "context": payload.context,
-            }
-        )
+                    "direction": ctx.get("direction"),
+                    "todayAction": ctx.get("todayAction") or ctx.get("today_action"),
+                    "tone": ctx.get("tone"),
+
+                    "system": payload.system,
+                    "context": payload.context,
+                }
+            )
+        else:
+            assistant = simple_answer(text)
+
     except Exception as e:
-        # ✅ Change 2: if mentor crashes, answer normally
-        print("🔥 mentor_reply ERROR:", e)
+        print("🔥 mentor/general ERROR:", e)
+        # Absolute fallback: try Gemini direct
         try:
             assistant = simple_answer(text)
         except Exception as e2:
             print("🔥 simple_answer ERROR:", e2)
-            assistant = "I paused for a moment. Ask again."
+            assistant = "I hit a temporary error. Please try again."
 
     if not isinstance(assistant, str) or not assistant.strip():
         assistant = "I’m here. Tell me what you want to do next."
@@ -359,10 +418,11 @@ def send_chat(payload: ChatSend):
     add_message(sid, "assistant", assistant)
     touch_session(sid)
 
-    # Optional summarization
+    # Optional summarization (demo-safe)
     try:
         msgs_for_summary = get_messages(sid, limit=12)
         if len(msgs_for_summary) >= 6:
+            # If mentor summarizer fails, just skip (do NOT break chat)
             summary = mentor_reply({"task": "summarize", "messages": msgs_for_summary})
             if isinstance(summary, str) and summary.strip():
                 save_summary(sid, summary)
@@ -872,10 +932,7 @@ def root():
 def debug_version():
     return {
         "service": "backend-1",
-        "cors_origins": [
-            "https://nova-human-frontend-4.onrender.com",
-            "http://localhost:3000",
-        ],
+        "cors_origins": allow_origins,
         "ts": datetime.utcnow().isoformat(),
     }
 
